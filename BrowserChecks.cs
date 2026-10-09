@@ -24,7 +24,7 @@ public static class BrowserChecks
         Check(native.Endpoint.IsLoopback, "conexión CDP local");
         var context = await browser.NewContextAsync(new() { AcceptDownloads = true });
         var page = await context.NewPageAsync();
-        Console.WriteLine("Diagnóstico de Chrome: navigator.webdriver=" + (await page.EvaluateAsync<bool>("navigator.webdriver")).ToString().ToLowerInvariant());
+        Check(!await page.EvaluateAsync<bool>("navigator.webdriver"), "inicio de Chrome sin modo de automatización implícito");
         await page.SetContentAsync("""
             <html><body>
             <a href="https://connect.garmin.com/app/activity/12345">Nueva ruta</a>
@@ -35,6 +35,9 @@ public static class BrowserChecks
         Check(await page.Locator(GarminRoutes.ActivitySelector).CountAsync() == 2, "selector de ambas rutas");
         var urls = await page.Locator(GarminRoutes.ActivitySelector).EvaluateAllAsync<string[]>("els => els.map(e => e.href)");
         Check(urls.Select(GarminRoutes.ActivityId).SequenceEqual(new[] { "12345", "67890" }), "IDs de enlaces del DOM");
+        var links = await GarminPortal.ReadLinksAsync(page);
+        Check(links.Length == 2 && links[0].text == "Nueva ruta"
+            && GarminRoutes.ActivityId(links[1].href) == "67890", "lectura de enlaces y nombres como objetos .NET");
         var bytes = await System.IO.File.ReadAllBytesAsync(zip);
         await context.RouteAsync("https://example.com/fixture.zip", route => route.FulfillAsync(new()
         {

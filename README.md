@@ -68,6 +68,22 @@ rutas y usa `/app/activities`. Se cambió el navegador después de observar un e
 genérico de SSO en la ventana lanzada directamente por Playwright. El acceso desde
 el navegador habitual sí funcionaba; eso no prueba que Garmin bloquee toda automatización.
 
+Chrome se inicia con un puerto CDP local explícito y distinto de cero. Usar
+`--remote-debugging-port=0` activa implícitamente `navigator.webdriver` en Chrome;
+se comprobó y corrigió esa opción. La prueba de navegador verifica el valor real
+sin modificarlo mediante JavaScript. Esto no demuestra por sí solo la causa del
+error de SSO ni garantiza que Garmin acepte el acceso.
+
+Se verificó el login real y la reutilización de la sesión. La ventana se cierra
+intencionalmente cuando termina de guardarla. El portal actual ofrece **Export File**
+en el menú de configuración de la actividad; el programa admite ese nombre y espera
+a que se renderice el menú. Se verificaron una descarga ZIP real y su conversión
+a JSON mediante las herramientas del portal; esa comprobación no hizo POST.
+
+También se verificó `run --enviar` con Qwen real: completó las seis herramientas,
+reutilizó la sesión, descargó un ZIP real y recibió `processed: 1, simulated: false`
+de la API. La ejecución terminó correctamente y conservó el recibo dentro de `.local`.
+
 Prueba local del navegador con una descarga y sesión ficticias:
 
 ```powershell
@@ -145,4 +161,5 @@ documentación y el archivo de bloqueo de paquetes, no descargas ni sesiones.
 - [Playwright .NET: autenticación](https://playwright.dev/dotnet/docs/auth)
 - [Playwright .NET: conexión a navegador por CDP](https://playwright.dev/dotnet/docs/api/class-browsertype#browser-type-connect-over-cdp)
 - [Playwright .NET: descargas](https://playwright.dev/dotnet/docs/downloads)
+- [MDN: opciones que activan navigator.webdriver](https://developer.mozilla.org/en-US/docs/Web/API/Navigator/webdriver)
 - [SDK FIT oficial de Garmin](https://developer.garmin.com/fit/get-the-sdk/)

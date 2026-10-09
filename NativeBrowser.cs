@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json.Nodes;
 
 namespace GarminAgent;
@@ -20,34 +22,47 @@ public sealed class NativeBrowser : IAsyncDisposable
         var localRoot = Path.GetFullPath(Path.Combine(root, ".local"));
         var profile = Path.Combine(localRoot, "browser-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(profile);
+        // A literal nonzero port avoids Chrome's port=0 automation startup mode.
+        // Reserve a free loopback port briefly; Chrome binds it after the reservation closes.
+        int port;
+        using (var reservation = new TcpListener(IPAddress.Loopback, 0))
+        {
+            reservation.Start();
+            port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+        }
+        var endpoint = new Uri("http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture));
         var info = new ProcessStartInfo(FindExecutable()) { UseShellExecute = false, CreateNoWindow = true };
         info.ArgumentList.Add("--user-data-dir=" + profile);
-        info.ArgumentList.Add("--remote-debugging-port=0");
+        info.ArgumentList.Add("--remote-debugging-port=" + port.ToString(CultureInfo.InvariantCulture));
         info.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
         info.ArgumentList.Add("--no-first-run");
         info.ArgumentList.Add("--no-default-browser-check");
         info.ArgumentList.Add(initialUrl);
-        // No credential arguments, automation flags, fingerprint scripts, or extensions.
+        // No credentials, --enable-automation, fingerprint scripts, or extensions.
         var process = Process.Start(info) ?? throw new AgentException("No se pudo abrir Chrome o Edge.");
         NativeBrowser? owned = null;
         try
         {
-            var activePort = Path.Combine(profile, "DevToolsActivePort");
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(2) };
             var deadline = DateTimeOffset.UtcNow.AddSeconds(25);
             while (DateTimeOffset.UtcNow < deadline)
             {
                 if (process.HasExited) throw new AgentException("El navegador se cerró antes de habilitar la conexión local.");
-                if (System.IO.File.Exists(activePort))
+                try
                 {
-                    string[] lines;
-                    try { lines = await System.IO.File.ReadAllLinesAsync(activePort); }
-                    catch (IOException) { await Task.Delay(200); continue; }
-                    if (lines.Length > 0 && int.TryParse(lines[0], NumberStyles.None, CultureInfo.InvariantCulture, out var port) && port is > 0 and <= 65535)
+                    var version = JsonNode.Parse(await http.GetStringAsync(new Uri(endpoint, "/json/version")));
+                    var socketUrl = version?["webSocketDebuggerUrl"]?.GetValue<string>();
+                    if (Uri.TryCreate(socketUrl, UriKind.Absolute, out var socket)
+                        && socket.Scheme == "ws" && socket.Host == "127.0.0.1" && socket.Port == port
+                        && socket.AbsolutePath.StartsWith("/devtools/browser/", StringComparison.Ordinal))
                     {
-                        owned = new(process, profile, localRoot, new Uri("http://127.0.0.1:" + port));
+                        owned = new(process, profile, localRoot, endpoint);
                         return owned;
                     }
                 }
+                catch (HttpRequestException) { }
+                catch (TaskCanceledException) { }
                 await Task.Delay(200);
             }
             throw new AgentException("No apareció el puerto local del navegador. Una política de Chrome/Edge puede impedir CDP.");

@@ -40,7 +40,7 @@ try
     {
         await using var portal = new GarminPortal(root);
         await portal.OpenAsync(interactive: true);
-        Console.WriteLine("Sesión web guardada cifrada para tu usuario de Windows.");
+        Console.WriteLine("Sesión web guardada cifrada para tu usuario de Windows. La ventana se cerrará ahora; puedes continuar con run.");
         return 0;
     }
     if (command is not ("run" or "demo")) throw new AgentException("Comando desconocido. Usa dotnet run -- help.");

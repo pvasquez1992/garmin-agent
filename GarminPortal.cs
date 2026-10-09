@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using Microsoft.Playwright;
@@ -67,37 +68,62 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
 
     public async Task<List<ActivityIdentity>> ListAsync()
     {
-        recentList = null;
-        await page!.GotoAsync(ActivitiesUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60000 });
-        EnsureConnectedUrl();
-        await page.Locator(GarminRoutes.ActivitySelector).First.WaitForAsync(new() { Timeout = 30000 });
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
-        while (recentList is null && DateTimeOffset.UtcNow < deadline) await Task.Delay(200);
-        var links = await page!.Locator(GarminRoutes.ActivitySelector).EvaluateAllAsync<Link[]>("els => els.map(e => ({href:e.href, text:(e.innerText || e.textContent || '').trim()}))");
-        var visible = new Dictionary<string, string>();
-        foreach (var link in links)
+        var stage = "abrir listado";
+        try
         {
-            var id = GarminRoutes.ActivityId(link.href);
-            if (id is not null) visible.TryAdd(id, link.text);
+            recentList = null;
+            await page!.GotoAsync(ActivitiesUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60000 });
+            EnsureConnectedUrl();
+            stage = "esperar enlaces";
+            await page.Locator(GarminRoutes.ActivitySelector).First.WaitForAsync(new() { Timeout = 30000 });
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
+            while (recentList is null && DateTimeOffset.UtcNow < deadline) await Task.Delay(200);
+            stage = "leer enlaces";
+            var links = await ReadLinksAsync(page!);
+            var visible = new Dictionary<string, string>();
+            foreach (var link in links)
+            {
+                var id = GarminRoutes.ActivityId(link.href);
+                if (id is not null) visible.TryAdd(id, link.text);
+            }
+            if (recentList is null) throw new AgentException("No se observó la lista de datos del portal; no se puede comprobar cuál actividad es la más reciente.");
+            stage = "leer respuesta de actividades";
+            var raw = JsonNode.Parse(await recentList.TextAsync()) as JsonArray
+                ?? throw new AgentException("Formato de listado Garmin inesperado.");
+            var dated = new List<(ActivityIdentity Identity, System.DateTime Utc)>();
+            foreach (var item in raw)
+            {
+                var id = item?["activityId"]?.ToString() ?? "";
+                if (!visible.ContainsKey(id)) continue;
+                FitActivity.ValidateId(id);
+                var start = item?["startTimeGMT"]?.GetValue<string>();
+                if (!System.DateTime.TryParse(start, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var utc)) continue;
+                var name = item?["activityName"]?.GetValue<string>();
+                var sport = item?["activityType"]?["typeKey"]?.GetValue<string>();
+                var local = item?["startTimeLocal"]?.GetValue<string>();
+                if (name is not { Length: > 0 and <= 500 }) continue;
+                dated.Add((new(id, name, sport, local), utc));
+            }
+            return dated.OrderByDescending(item => item.Utc).Take(10).Select(item => item.Identity).ToList();
         }
-        if (recentList is null) throw new AgentException("No se observó la lista de datos del portal; no se puede comprobar cuál actividad es la más reciente.");
-        var raw = JsonNode.Parse(await recentList.TextAsync()) as JsonArray
-            ?? throw new AgentException("Formato de listado Garmin inesperado.");
-        var dated = new List<(ActivityIdentity Identity, System.DateTime Utc)>();
-        foreach (var item in raw)
+        catch (PlaywrightException ex)
         {
-            var id = item?["activityId"]?.ToString() ?? "";
-            if (!visible.ContainsKey(id)) continue;
-            FitActivity.ValidateId(id);
-            var start = item?["startTimeGMT"]?.GetValue<string>();
-            if (!System.DateTime.TryParse(start, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var utc)) continue;
-            var name = item?["activityName"]?.GetValue<string>();
-            var sport = item?["activityType"]?["typeKey"]?.GetValue<string>();
-            var local = item?["startTimeLocal"]?.GetValue<string>();
-            if (name is not { Length: > 0 and <= 500 }) continue;
-            dated.Add((new(id, name, sport, local), utc));
+            // Classify known failures without logging URLs, response bodies or browser state.
+            var reason = ex.Message.Contains("No resource with given identifier", StringComparison.OrdinalIgnoreCase) ? "respuesta ya no disponible"
+                : ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase) ? "la página cambió durante la lectura"
+                : ex.Message.Contains("net::ERR_ABORTED", StringComparison.OrdinalIgnoreCase) ? "navegación interrumpida"
+                : ex.Message.Contains("Target page, context or browser has been closed", StringComparison.OrdinalIgnoreCase) ? "navegador cerrado"
+                : ex.Message.Contains("Timeout", StringComparison.OrdinalIgnoreCase) ? "tiempo de espera agotado"
+                : ex.Message.Contains("Unsupported type", StringComparison.OrdinalIgnoreCase) ? "tipo de resultado no admitido"
+                : ex.Message.Contains("deserialize", StringComparison.OrdinalIgnoreCase) ? "conversión del resultado"
+                : ex.Message.Contains("EvalError", StringComparison.OrdinalIgnoreCase) ? "evaluación rechazada"
+                : ex.Message.Contains("TypeError", StringComparison.OrdinalIgnoreCase) ? "tipo incorrecto en JavaScript"
+                : ex.Message.Contains("ReferenceError", StringComparison.OrdinalIgnoreCase) ? "referencia de JavaScript inexistente"
+                : ex.Message.Contains("constructor", StringComparison.OrdinalIgnoreCase) ? "constructor del resultado"
+                : ex.Message.Contains("JSON", StringComparison.OrdinalIgnoreCase) ? "conversión JSON"
+                : "error de navegador";
+            throw new AgentException($"No se pudo leer Garmin en el paso '{stage}': {reason}.");
         }
-        return dated.OrderByDescending(item => item.Utc).Take(10).Select(item => item.Identity).ToList();
     }
 
     public async Task<(ActivityIdentity Identity, string Zip)> DownloadAsync(ActivityIdentity identity, string runDirectory)
@@ -121,11 +147,15 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
         }
         catch (System.TimeoutException) { Console.WriteLine("No se observó metadata del portal; se usará la identidad del listado y el FIT."); }
         catch (System.Text.Json.JsonException) { Console.WriteLine("Metadata no disponible; se usará el FIT."); }
-        var export = page.GetByText(new Regex("^(Export Original|Exportar original)$", RegexOptions.IgnoreCase));
+        // The metadata response can arrive before React has rendered the toolbar.
+        try { await page.Locator("[class*='ActivitySettingsMenu_menuContainer'] > button").WaitForAsync(new() { Timeout = 15000 }); }
+        catch (System.TimeoutException) { } // Older portal versions use the fallback selectors below.
+        var export = page.GetByText(new Regex("^(Export Original|Export File|Exportar original|Exportar archivo)$", RegexOptions.IgnoreCase));
         if (!await export.First.IsVisibleAsync())
         {
             var selectors = new[]
             {
+                "[class*='ActivitySettingsMenu_menuContainer'] > button",
                 "button[aria-label='More']", "button[aria-label='Más']", "button[title='More']", "button[title='Settings']",
                 ".activity-settings .dropdown-toggle", ".activity-settings-icon", ".activity-actions .dropdown-toggle",
                 "#activitySettingsMenu", "#activity-settings", ".activity-details .icon-gear", ".icon-gear"
@@ -136,6 +166,8 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
                 var candidates = page.Locator(selector);
                 if (await candidates.CountAsync() != 1 || !await candidates.IsVisibleAsync()) continue;
                 await candidates.ClickAsync();
+                try { await export.First.WaitForAsync(new() { Timeout = 5000 }); }
+                catch (System.TimeoutException) { }
                 if (await export.CountAsync() == 1 && await export.IsVisibleAsync()) { opened = true; break; }
             }
             if (!opened)
@@ -179,5 +211,14 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
             if (native is not null) await native.DisposeAsync();
         }
     }
-    private sealed record Link(string href, string text);
+    internal static async Task<Link[]> ReadLinksAsync(IPage page)
+    {
+        // Serialize in the browser and deserialize in .NET, rather than asking CDP
+        // to materialize a custom record array directly.
+        var json = await page.Locator(GarminRoutes.ActivitySelector).EvaluateAllAsync<string>(
+            "els => JSON.stringify(els.map(e => ({href:e.href, text:(e.innerText || e.textContent || '').trim()})))");
+        return JsonSerializer.Deserialize<Link[]>(json)
+            ?? throw new AgentException("No se pudo interpretar el listado de enlaces de Garmin.");
+    }
+    internal sealed record Link(string href, string text);
 }
