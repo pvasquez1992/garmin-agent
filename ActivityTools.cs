@@ -16,8 +16,8 @@ public sealed class ActivityTools(string root, string runDirectory, bool demo, b
     private string? zip;
     private JsonObject? payload;
     public bool Finished { get; private set; }
-    private static ToolSpec Empty(string name, string description) => new(name, description,
-        new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["additionalProperties"] = false });
+    private static ToolSpec Empty(string name, string description) => new(name, description + " This tool takes NO arguments. Always call with {}.",
+        new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray(), ["additionalProperties"] = false });
     public IReadOnlyList<ToolSpec> Available => state switch
     {
         0 => [Empty("abrir_garmin", "Open Garmin Connect in the browser and reuse or establish the local web session.")],
@@ -37,11 +37,18 @@ public sealed class ActivityTools(string root, string runDirectory, bool demo, b
         if (!Available.Any(tool => tool.Name == name)) throw new AgentException("La herramienta no está disponible en este estado.");
         var allowed = name == "descargar_original" ? new[] { "activityId" } : Array.Empty<string>();
         if (arguments.Any(pair => !allowed.Contains(pair.Key)) || arguments.Count != allowed.Length)
-            throw new AgentException("Argumentos inesperados; no se aceptan URLs, rutas ni claves del modelo.");
+            throw new AgentException(allowed.Length == 0
+                ? $"{name} no recibe argumentos: vuelve a llamar {name} con {{}}. El programa ya conserva el archivo y la actividad."
+                : "descargar_original requiere solo activityId como cadena. Usa el ID de la primera actividad del listado.");
         switch (name)
         {
             case "abrir_garmin":
-                if (!demo) { portal = new GarminPortal(root); await portal.OpenAsync(); }
+                if (!demo)
+                {
+                    if (portal is not null) await portal.DisposeAsync();
+                    portal = new GarminPortal(root);
+                    await portal.OpenAsync();
+                }
                 state = 1;
                 return new() { ["connected"] = true, ["simulated"] = demo };
             case "listar_actividades":

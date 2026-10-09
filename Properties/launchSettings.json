@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "Demo del agente": {
+      "commandName": "Project",
+      "commandLineArgs": "demo"
+    },
+    "Conectar Garmin": {
+      "commandName": "Project",
+      "commandLineArgs": "login"
+    },
+    "Preparar JSON": {
+      "commandName": "Project",
+      "commandLineArgs": "run"
+    },
+    "Importar en API": {
+      "commandName": "Project",
+      "commandLineArgs": "run --enviar"
+    }
+  }
+}

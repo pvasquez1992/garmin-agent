@@ -4,10 +4,16 @@ using System.Text.Json;
 try
 {
     var command = args.FirstOrDefault() ?? "help";
-    var root = Path.GetFullPath(Environment.CurrentDirectory);
-    if (!File.Exists(Path.Combine(root, "GarminAgent.csproj")))
-        throw new AgentException("Ejecuta el programa dentro de C:\\myGarming\\garmin-agent.");
+    string FindRoot()
+    {
+        foreach (var starting in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
+            for (var directory = new DirectoryInfo(starting); directory is not null; directory = directory.Parent)
+                if (File.Exists(Path.Combine(directory.FullName, "GarminAgent.csproj"))) return directory.FullName;
+        throw new AgentException("No se encontró GarminAgent.csproj. Ejecuta el programa desde la carpeta del proyecto.");
+    }
+    var root = FindRoot();
     if (command == "self-test") return await Checks.RunAsync(root);
+    if (command == "browser-check") return await BrowserChecks.RunAsync(root);
     if (command == "help")
     {
         Console.WriteLine("""
@@ -17,6 +23,7 @@ try
         dotnet run -- run                 Descarga la última actividad y prepara JSON; sin POST
         dotnet run -- run --enviar        Descarga, convierte y envía a /sync/activities
         dotnet run -- self-test           Pruebas locales; no usan Garmin ni producción
+        dotnet run -- browser-check       Prueba navegador/CDP/descarga con datos ficticios
         Opcional: --model qwen2.5-7b --timezone America/New_York
         """);
         return 0;
@@ -32,7 +39,7 @@ try
     if (command == "login")
     {
         await using var portal = new GarminPortal(root);
-        await portal.OpenAsync();
+        await portal.OpenAsync(interactive: true);
         Console.WriteLine("Sesión web guardada cifrada para tu usuario de Windows.");
         return 0;
     }
@@ -50,6 +57,11 @@ try
     Console.WriteLine($"Archivos locales: {run}");
     return 0;
 }
+catch (NeedsLoginException ex)
+{
+    Console.Error.WriteLine("Estado: reauth_required. " + ex.Message);
+    return 2;
+}
 catch (AgentException ex)
 {
     Console.Error.WriteLine(ex.Message);
@@ -65,6 +77,7 @@ catch (Exception ex)
 namespace GarminAgent
 {
     public sealed class AgentException(string message) : Exception(message);
+    public sealed class NeedsLoginException(string message) : Exception(message);
     public static class JsonSettings
     {
         public static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true };

@@ -71,6 +71,13 @@ public static class Checks
         Check(row["startedAt"]!.GetValue<string>() == "2026-10-09T01:00:00.000Z", "UTC en formato estricto");
         Check(row["startLatitude"]!.GetValue<double>() == 0 && row["startLongitude"]!.GetValue<double>() == 0, "coordenadas cero válidas");
         Check(row["id"]!.GetValue<string>() == Fixture.Identity.Id, "ID Garmin separado del FIT");
+        Check(GarminRoutes.ActivityId("https://connect.garmin.com/app/activity/12345") == "12345", "ruta Garmin app actual");
+        Check(GarminRoutes.ActivityId("https://connect.garmin.com/modern/activity/12345?x=1") == "12345", "ruta Garmin modern anterior");
+        Check(GarminRoutes.ActivityId("https://evil.example/app/activity/12345") is null, "rechaza dominio ajeno");
+        Check(GarminRoutes.ActivityId("http://connect.garmin.com/app/activity/12345") is null, "rechaza HTTP");
+        Check(!GarminRoutes.IsApp("https://sso.garmin.com/portal/sso/en-US/sign-in"), "SSO no significa sesión de actividades");
+        Check(GarminRoutes.IsService("https://connectapi.garmin.com/activitylist-service/activities/search/activities", "/activitylist-service/"), "host API de Garmin");
+        Check(!GarminRoutes.IsService("https://evil.example/activitylist-service/activities", "/activitylist-service/"), "rechaza respuestas de servicio ajenas");
         Reject(() => FitActivity.ValidateId("../x"), "ID malicioso");
         Reject(() => FitActivity.ValidateId("0"), "ID cero");
         var bad = Path.Combine(directory, "bad.zip");
@@ -91,8 +98,23 @@ public static class Checks
         var model = new FakeModel();
         await new ImportAgent(model, tools, trace).RunAsync();
         Check(tools.Finished && model.Calls == 6, "ciclo modelo → herramienta → resultado con límite");
+        var expiredModel = new FakeModel();
+        try
+        {
+            await new ImportAgent(expiredModel, new ExpiredTools(), trace).RunAsync();
+            throw new AgentException("Sesión vencida no detuvo el agente.");
+        }
+        catch (NeedsLoginException) { assertions++; }
+        Check(expiredModel.Calls == 1, "sesión vencida detiene sin repetir login ni publicar");
         Console.WriteLine($"Pruebas: {assertions} comprobaciones correctas. Solo datos ficticios y HTTP simulado.");
         return 0;
+    }
+    private sealed class ExpiredTools : ITools
+    {
+        public IReadOnlyList<ToolSpec> Available => [new("abrir_garmin", "login", new JsonObject())];
+        public bool Finished => false;
+        public Task<JsonObject> ExecuteAsync(string name, JsonObject arguments) =>
+            Task.FromException<JsonObject>(new NeedsLoginException("Sesión vencida de prueba."));
     }
     private sealed class FakeModel : IModel
     {
