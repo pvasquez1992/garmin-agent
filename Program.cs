@@ -17,7 +17,7 @@ try
     if (command == "help")
     {
         Console.WriteLine("""
-        Garmin Agent — laboratorio local .NET 10 + Foundry Local + Playwright
+        Garmin Agent — .NET 10 + Microsoft Agent Framework + Foundry Local + Playwright
         dotnet run -- demo                Modelo real; portal y POST simulados; FIT ficticio real
         dotnet run -- login               Abre Garmin para conectar y cifrar la sesión web
         dotnet run -- run                 Descarga la última actividad y prepara JSON; sin POST
@@ -52,7 +52,8 @@ try
     var connection = await Foundry.DiscoverAsync(Option("--model", "qwen2.5-7b"));
     Console.WriteLine($"Foundry Local: {connection.Model}. Modo: {(demo ? "demo" : args.Contains("--enviar") ? "envío real" : "preparar JSON")}.");
     await using var tools = new ActivityTools(root, run, demo, args.Contains("--enviar"), Option("--timezone", "America/New_York"));
-    var agent = new ImportAgent(new Foundry(connection), tools, trace);
+    using var model = Foundry.CreateClient(connection);
+    var agent = new ImportAgent(model, tools, trace);
     await agent.RunAsync();
     Console.WriteLine($"Archivos locales: {run}");
     return 0;

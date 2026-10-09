@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using Dynastream.Fit;
+using Microsoft.Extensions.AI;
 
 namespace GarminAgent;
 
@@ -106,6 +107,27 @@ public static class Checks
         }
         catch (NeedsLoginException) { assertions++; }
         Check(expiredModel.Calls == 1, "sesión vencida detiene sin repetir login ni publicar");
+        Reject(() => Foundry.CreateClient(new(new Uri("https://remote.example"), "test")), "modelo remoto rechazado antes de conectar");
+        foreach (var fault in new[] { "parallel", "unknown", "text", "extra", "numeric" })
+        {
+            var flow = Path.Combine(directory, fault);
+            Directory.CreateDirectory(flow);
+            await using var checkedTools = new ActivityTools(root, flow, true, false, "America/New_York");
+            var faultyModel = new FakeModel(fault);
+            await new ImportAgent(faultyModel, checkedTools, trace).RunAsync();
+            Check(checkedTools.Finished && faultyModel.Calls == 7, "framework rechaza y recupera: " + fault);
+            Check(faultyModel.SawToolResults, "framework devuelve resultados a la siguiente consulta: " + fault);
+            if (fault is "extra" or "numeric")
+                Check(faultyModel.SawToolError, "argumentos inválidos no se descartan silenciosamente: " + fault);
+        }
+        var stuckModel = new FakeModel("always-text");
+        try
+        {
+            await new ImportAgent(stuckModel, new ExpiredTools(), trace).RunAsync();
+            throw new AgentException("Texto sin herramientas marcó éxito.");
+        }
+        catch (AgentException ex) when (ex.Message.Contains("12 turnos")) { assertions++; }
+        Check(stuckModel.Calls == 12, "límite global de consultas también sin tool calling");
         Console.WriteLine($"Pruebas: {assertions} comprobaciones correctas. Solo datos ficticios y HTTP simulado.");
         return 0;
     }
@@ -116,24 +138,33 @@ public static class Checks
         public Task<JsonObject> ExecuteAsync(string name, JsonObject arguments) =>
             Task.FromException<JsonObject>(new NeedsLoginException("Sesión vencida de prueba."));
     }
-    private sealed class FakeModel : IModel
+    private sealed class FakeModel(string? fault = null) : IChatClient
     {
         public int Calls;
-        public Task<JsonObject> NextAsync(JsonArray messages, IReadOnlyList<ToolSpec> tools)
+        public bool SawToolResults;
+        public bool SawToolError;
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
             Calls++;
-            var tool = tools.Single();
-            return Task.FromResult(new JsonObject
-            {
-                ["role"] = "assistant", ["tool_calls"] = new JsonArray(new JsonObject
-                {
-                    ["id"] = "call_" + Calls, ["type"] = "function", ["function"] = new JsonObject
-                    {
-                        ["name"] = tool.Name, ["arguments"] = tool.Name == "descargar_original" ? new JsonObject { ["activityId"] = Fixture.Identity.Id }.ToJsonString() : "{}"
-                    }
-                })
-            });
+            var results = messages.SelectMany(message => message.Contents).OfType<FunctionResultContent>().ToArray();
+            SawToolResults |= results.Length > 0;
+            SawToolError |= results.Any(result => result.Result?.ToString()?.Contains("error") == true);
+            var tool = options!.Tools!.Single();
+            Dictionary<string, object?> arguments = tool.Name == "descargar_original"
+                ? new() { ["activityId"] = Fixture.Identity.Id } : [];
+            if (fault == "always-text" || (fault == "text" && Calls == 1))
+                return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "He terminado sin usar herramientas.")));
+            var name = fault == "unknown" && Calls == 1 ? "publicar_actividades" : tool.Name;
+            if (fault == "extra" && Calls == 1) arguments["unexpected"] = "do not discard";
+            if (fault == "numeric" && Calls == 3) arguments["activityId"] = 12345;
+            List<AIContent> contents = [new FunctionCallContent("call_" + Calls, name, arguments)];
+            if (fault == "parallel" && Calls == 1)
+                contents.Add(new FunctionCallContent("parallel", "publicar_actividades", new Dictionary<string, object?>()));
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, contents)));
         }
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
     private sealed class FakeHttp(HttpStatusCode status, string body) : HttpMessageHandler
     {

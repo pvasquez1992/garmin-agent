@@ -1,7 +1,7 @@
-# Garmin Agent: laboratorio con Foundry Local
+# Garmin Agent: Microsoft Agent Framework + Foundry Local
 
 Un agente local en C#/.NET 10 que importa una actividad de Garmin Connect mediante
-herramientas. Es un proyecto para aprender el ciclo modelo → herramienta → resultado.
+herramientas. Usa Microsoft Agent Framework para aprender el ciclo modelo → herramienta → resultado.
 La sincronización existente de GitHub Actions sigue funcionando por separado.
 
 ## Qué hace
@@ -9,7 +9,7 @@ La sincronización existente de GitHub Actions sigue funcionando por separado.
 ```text
 Foundry Local / Qwen pide una herramienta
              ↓
-Nuestro código C# comprueba y ejecuta la llamada
+Agent Framework invoca una herramienta C# validada por nuestra aplicación
              ↓
 Devuelve un resultado al modelo → siguiente turno
 ```
@@ -22,8 +22,35 @@ del FIT. La API actualiza por ID, por lo que no crea duplicados por repetir el e
 El recorrido de esta primera versión está acotado mediante estados. Las herramientas
 se ofrecen al modelo cuando corresponde; las llamadas también se validan en código.
 El navegador no recibe órdenes de clic arbitrarias del modelo. Foundry ejecuta
-inferencia local y C# implementa el bucle; todavía no usamos Microsoft Agent Framework
-ni servicios de agentes de Azure.
+inferencia local y Microsoft Agent Framework invoca las herramientas y construye
+los mensajes de resultado. La aplicación conserva un recorrido explícito de hasta
+12 turnos y ofrece una herramienta por estado; Qwen no planifica libremente.
+
+## Qué cambió con el NuGet
+
+`Microsoft.Agents.AI.OpenAI` conecta el framework a un cliente compatible con
+OpenAI. El endpoint está limitado a localhost: el modelo sigue siendo Qwen en
+Foundry Local, sin una cuenta de OpenAI ni suscripción de Azure.
+
+- `Foundry.cs` descubre el puerto/modelo de la CLI y crea un `IChatClient` con
+  el SDK cliente OpenAI apuntando al servicio local. No sigue redirecciones ni
+  reintenta peticiones HTTP automáticamente.
+- `Agent.cs` crea un `AIAgent`, expone cada herramienta como `AIFunction` y usa
+  `FunctionInvokingChatClient` para invocarla y devolver su resultado.
+- La aplicación valida la respuesta completa antes de ejecutar: rechaza llamadas
+  paralelas, herramientas ajenas al estado y respuestas solo de texto. Conserva
+  todos los argumentos para detectar extras y IDs inválidos.
+- Después de una llamada el framework devuelve el control a la aplicación, que
+  actualiza la herramienta disponible. La sesión vencida detiene inmediatamente
+  el flujo, sin que el framework la convierta en un reintento de login.
+
+Este cambio incorpora **Agent Framework**. Todavía no integra el SDK de gestión
+de modelos `Microsoft.AI.Foundry.Local.WinML`: la CLI sigue cargando Qwen.
+El login, Playwright, FIT, JSON, DPAPI y el POST siguen en nuestras herramientas.
+
+Verificación de esta migración: compilación sin advertencias, 36 comprobaciones
+locales y demo con Qwen real completando las seis herramientas. El portal, FIT
+y POST de la demo son ficticios; no se hizo POST real durante esta migración.
 
 ## Requisitos
 
@@ -80,7 +107,7 @@ en el menú de configuración de la actividad; el programa admite ese nombre y e
 a que se renderice el menú. Se verificaron una descarga ZIP real y su conversión
 a JSON mediante las herramientas del portal; esa comprobación no hizo POST.
 
-También se verificó `run --enviar` con Qwen real: completó las seis herramientas,
+Antes de incorporar Agent Framework se verificó `run --enviar` con Qwen real: completó las seis herramientas,
 reutilizó la sesión, descargó un ZIP real y recibió `processed: 1, simulated: false`
 de la API. La ejecución terminó correctamente y conservó el recibo dentro de `.local`.
 
@@ -127,7 +154,8 @@ También están los perfiles **Conectar Garmin**, **Preparar JSON** e **Importar
 | Archivo | Papel | Punto útil para depurar |
 | --- | --- | --- |
 | `Program.cs` | Selecciona el modo y conecta componentes. | Antes de `agent.RunAsync()`. |
-| `Agent.cs` | Llama a Foundry, recibe `tool_calls` y devuelve resultados. | Antes de `tools.ExecuteAsync`. |
+| `Agent.cs` | Crea `AIAgent` y las funciones; valida respuestas y coordina estados. | `ActivityFunction.InvokeCoreAsync`, antes de `tools.ExecuteAsync`. |
+| `Foundry.cs` | Descubre el endpoint local y conecta su `IChatClient` al framework. | `CreateClient`. |
 | `ActivityTools.cs` | Herramientas, estados, lectura de clave y POST. | Casos `convertir_zip` y `publicar_actividades`. |
 | `GarminPortal.cs` | Sesión cifrada, navegador y descarga web de Garmin. | `DownloadAsync`. |
 | `NativeBrowser.cs` | Abre Chrome/Edge normal, espera el login y ofrece CDP local; limpia su perfil temporal. | `WaitForGarminLoginAsync`. |
@@ -158,6 +186,8 @@ documentación y el archivo de bloqueo de paquetes, no descargas ni sesiones.
 ## Fuentes
 
 - [Foundry Local REST API](https://learn.microsoft.com/en-us/azure/foundry-local/reference/reference-rest)
+- [Agent Framework: clientes compatibles con OpenAI](https://learn.microsoft.com/en-us/agent-framework/integrations/by-component/model-providers/openai)
+- [Agent Framework: agentes y workflows](https://learn.microsoft.com/en-us/agent-framework/overview/)
 - [Playwright .NET: autenticación](https://playwright.dev/dotnet/docs/auth)
 - [Playwright .NET: conexión a navegador por CDP](https://playwright.dev/dotnet/docs/api/class-browsertype#browser-type-connect-over-cdp)
 - [Playwright .NET: descargas](https://playwright.dev/dotnet/docs/downloads)

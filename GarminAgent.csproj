@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Garmin.FIT.Sdk" Version="21.218.0" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
     <PackageReference Include="Microsoft.Playwright" Version="1.63.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
   </ItemGroup>
