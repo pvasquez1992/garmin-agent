@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 
 namespace GarminAgent;
 
-public sealed class ActivityTools(string root, string runDirectory, bool demo, bool send, string timezone) : ITools, IAsyncDisposable
+public sealed class ActivityTools(string root, string runDirectory, bool demo, bool send, string timezone, CancellationToken cancellationToken = default) : ITools, IAsyncDisposable
 {
     private GarminPortal? portal;
     private int state;
@@ -47,7 +47,7 @@ public sealed class ActivityTools(string root, string runDirectory, bool demo, b
                 {
                     if (portal is not null) await portal.DisposeAsync();
                     portal = new GarminPortal(root);
-                    await portal.OpenAsync();
+                    await portal.OpenAsync(renewExpiredSession: true, cancellationToken: cancellationToken);
                 }
                 state = 1;
                 return new() { ["connected"] = true, ["simulated"] = demo };

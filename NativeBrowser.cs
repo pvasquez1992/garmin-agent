@@ -75,23 +75,24 @@ public sealed class NativeBrowser : IAsyncDisposable
         }
     }
 
-    public async Task WaitForGarminLoginAsync(TimeSpan timeout)
+    public async Task WaitForGarminLoginAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
         using var handler = new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false };
         using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(3) };
-        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+        var deadline = timeout is null ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.Add(timeout.Value);
         while (DateTimeOffset.UtcNow < deadline)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (process.HasExited) throw new NeedsLoginException("Se cerró el navegador antes de completar el acceso a Garmin.");
             try
             {
-                var targets = JsonNode.Parse(await http.GetStringAsync(new Uri(Endpoint, "/json/list"))) as JsonArray;
+                var targets = JsonNode.Parse(await http.GetStringAsync(new Uri(Endpoint, "/json/list"), cancellationToken)) as JsonArray;
                 if (targets?.Any(target => target?["type"]?.GetValue<string>() == "page"
                     && GarminRoutes.IsApp(target["url"]?.GetValue<string>() ?? "")) == true) return;
             }
             catch (HttpRequestException) { }
-            catch (TaskCanceledException) { }
-            await Task.Delay(500);
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+            await Task.Delay(500, cancellationToken);
         }
         throw new NeedsLoginException("No se completó el acceso en el navegador normal. Ejecuta login otra vez.");
     }

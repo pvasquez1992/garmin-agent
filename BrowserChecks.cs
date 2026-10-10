@@ -25,6 +25,24 @@ public static class BrowserChecks
         var context = await browser.NewContextAsync(new() { AcceptDownloads = true });
         var page = await context.NewPageAsync();
         Check(!await page.EvaluateAsync<bool>("navigator.webdriver"), "inicio de Chrome sin modo de automatización implícito");
+        using (var cancelLogin = new CancellationTokenSource(TimeSpan.FromMilliseconds(750)))
+        {
+            try
+            {
+                await native.WaitForGarminLoginAsync(cancellationToken: cancelLogin.Token);
+                throw new AgentException("La espera de login terminó sin acceso ni cancelación.");
+            }
+            catch (OperationCanceledException) when (cancelLogin.IsCancellationRequested)
+            {
+                Check(!page.IsClosed, "cancelar la espera de acceso no cierra el navegador por su cuenta");
+            }
+        }
+        try
+        {
+            await native.WaitForGarminLoginAsync(TimeSpan.Zero);
+            throw new AgentException("El límite explícito de acceso no se respetó.");
+        }
+        catch (NeedsLoginException) { Check(!page.IsClosed, "espera limitada conserva la ventana hasta que el dueño la cierre"); }
         await page.SetContentAsync("""
             <html><body>
             <a href="https://connect.garmin.com/app/activity/12345">Nueva ruta</a>

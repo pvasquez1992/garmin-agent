@@ -117,6 +117,8 @@ de tu navegador habitual. Introduce allí tus credenciales y el MFA si Garmin lo
 solicita. El programa espera el retorno a Garmin Connect antes de conectar Playwright
 mediante CDP local. Después comprueba las actividades, guarda la sesión web cifrada
 con DPAPI en `.local/browser-session.bin` y cierra el navegador temporal.
+El acceso interactivo no tiene un límite de tiempo automático: espera hasta que
+entres, cierres la ventana o canceles con Ctrl+C.
 La contraseña no se escribe en archivos del proyecto ni se manda al modelo.
 Durante el login el navegador maneja su almacenamiento normal en el perfil temporal;
 el programa elimina ese perfil al terminar. Si el navegador deja archivos bloqueados,
@@ -150,9 +152,12 @@ dotnet run -- browser-check
 ```
 
 En próximas ejecuciones descifra esa sesión para el mismo usuario de Windows y
-la entrega al navegador. Si falta, vence o es invalidada, `run` se detiene con estado
-`reauth_required` y código de salida 2. Ejecuta `login` y repite `run`; el modelo no
-reintenta logins ni recibe la contraseña. Esto no garantiza acceso desatendido indefinido. La sesión web es
+la entrega al navegador. Si falta, vence o es invalidada al abrir Garmin, `run`
+abre una ventana nueva para renovar el acceso una vez, guarda la sesión cifrada
+y continúa la misma importación. Esa renovación la controla C#, sin reintentos
+del modelo. Si Garmin vuelve a exigir acceso más adelante en el flujo, se detiene
+con `reauth_required` y código 2: ejecuta `login` y repite `run`.
+El modelo no recibe la contraseña. Esto no garantiza acceso desatendido indefinido. La sesión web es
 independiente de los tokens del sincronizador de GitHub Actions y no los modifica.
 
 ## Preparar y enviar una actividad real

@@ -19,8 +19,21 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
     private string SessionFile => Path.Combine(root, ".local", "browser-session.bin");
     private const string ActivitiesUrl = GarminRoutes.Activities;
 
-    public async Task OpenAsync(bool interactive = false)
+    public async Task OpenAsync(bool interactive = false, bool renewExpiredSession = false, CancellationToken cancellationToken = default)
     {
+        try { await OpenSessionAsync(interactive, cancellationToken); }
+        catch (NeedsLoginException) when (!interactive && renewExpiredSession)
+        {
+            await DisposeAsync();
+            Console.WriteLine("La sesión guardada falta o venció. Se abrirá una nueva ventana para iniciar sesión; esperará hasta que termines o canceles con Ctrl+C.");
+            // One interactive renewal, controlled by code rather than model retries.
+            await OpenSessionAsync(interactive: true, cancellationToken);
+        }
+    }
+
+    private async Task OpenSessionAsync(bool interactive, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!interactive && !System.IO.File.Exists(SessionFile))
             throw new NeedsLoginException("Primero conecta la sesión web con dotnet run -- login; después repite run.");
         string? storage = null;
@@ -37,8 +50,8 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
         native = await NativeBrowser.StartAsync(root, interactive ? GarminRoutes.SignIn : "about:blank");
         if (interactive)
         {
-            Console.WriteLine("Inicia sesión en la ventana normal de Chrome/Edge y completa el MFA si aparece. El agente se conectará después del acceso.");
-            await native.WaitForGarminLoginAsync(TimeSpan.FromMinutes(10));
+            Console.WriteLine("Inicia sesión en Chrome/Edge y completa el MFA si aparece. Esta ventana espera hasta que termines; Ctrl+C cancela. El agente se conectará después del acceso.");
+            await native.WaitForGarminLoginAsync(cancellationToken: cancellationToken);
         }
         playwright = await Playwright.CreateAsync();
         browser = await playwright.Chromium.ConnectOverCDPAsync(native.Endpoint.ToString(), new() { NoDefaults = interactive, Timeout = 15000 });
@@ -55,16 +68,23 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
         var deadline = DateTimeOffset.UtcNow.AddSeconds(45);
         while (DateTimeOffset.UtcNow < deadline)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (page.IsClosed) throw new AgentException("Se cerró el navegador antes de conectar Garmin.");
             if (GarminRoutes.IsApp(page.Url) && await page.Locator(GarminRoutes.ActivitySelector).CountAsync() > 0)
             {
                 await SaveSessionAsync();
                 return;
             }
-            await Task.Delay(1000);
+            if (!interactive && IsSignInPage(page.Url))
+                throw new NeedsLoginException("Garmin pidió renovar la sesión web.");
+            await Task.Delay(1000, cancellationToken);
         }
         throw new NeedsLoginException("No se observó una sesión válida. Ejecuta dotnet run -- login para autenticarte y después repite run.");
     }
+
+    private static bool IsSignInPage(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && uri.Scheme == "https"
+        && (uri.Host == "sso.garmin.com" || uri.Host == "connect.garmin.com" && uri.AbsolutePath.StartsWith("/signin", StringComparison.Ordinal));
 
     public async Task<List<ActivityIdentity>> ListAsync()
     {
@@ -207,8 +227,12 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
         }
         finally
         {
-            playwright?.Dispose();
-            if (native is not null) await native.DisposeAsync();
+            try
+            {
+                playwright?.Dispose();
+                if (native is not null) await native.DisposeAsync();
+            }
+            finally { context = null; browser = null; page = null; recentList = null; playwright = null; native = null; }
         }
     }
     internal static async Task<Link[]> ReadLinksAsync(IPage page)

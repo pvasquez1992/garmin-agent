@@ -51,7 +51,7 @@ try
     if (command == "login")
     {
         await using var portal = new GarminPortal(root);
-        await portal.OpenAsync(interactive: true);
+        await portal.OpenAsync(interactive: true, cancellationToken: shutdown.Token);
         Console.WriteLine("Sesión web guardada cifrada para tu usuario de Windows. La ventana se cerrará ahora; puedes continuar con run.");
         return 0;
     }
@@ -64,7 +64,7 @@ try
     await using var foundry = await Foundry.StartAsync(root, Option("--model", defaultModel), shutdown.Token);
     var connection = foundry.Connection;
     Console.WriteLine($"Foundry Local: {connection.Model}. Modo: {(demo ? "demo" : args.Contains("--enviar") ? "envío real" : "preparar JSON")}.");
-    await using var tools = new ActivityTools(root, run, demo, args.Contains("--enviar"), Option("--timezone", "America/New_York"));
+    await using var tools = new ActivityTools(root, run, demo, args.Contains("--enviar"), Option("--timezone", "America/New_York"), shutdown.Token);
     using var model = Foundry.CreateClient(connection);
     var agent = new ImportAgent(model, tools, trace);
     await agent.RunAsync(shutdown.Token);
