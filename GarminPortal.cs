@@ -8,7 +8,7 @@ using Microsoft.Playwright;
 
 namespace GarminAgent;
 
-public sealed class GarminPortal(string root) : IAsyncDisposable
+public sealed class GarminPortal(string root, bool useSavedCredentials = true) : IAsyncDisposable
 {
     private IPlaywright? playwright;
     private IBrowser? browser;
@@ -50,6 +50,24 @@ public sealed class GarminPortal(string root) : IAsyncDisposable
         native = await NativeBrowser.StartAsync(root, interactive ? GarminRoutes.SignIn : "about:blank");
         if (interactive)
         {
+            if (useSavedCredentials && GarminCredentials.Exists(root))
+            {
+                Console.WriteLine("Completando el formulario con las credenciales cifradas de este usuario de Windows...");
+                try
+                {
+                    // Disconnect after autofill; the owned normal browser remains open for MFA/manual login.
+                    using var loginPlaywright = await Playwright.CreateAsync();
+                    var loginBrowser = await loginPlaywright.Chromium.ConnectOverCDPAsync(native.Endpoint.ToString(), new() { NoDefaults = true, Timeout = 15000 });
+                    var submitted = await GarminAutoLogin.TrySubmitAsync(loginBrowser, GarminCredentials.Read(root), cancellationToken);
+                    Console.WriteLine(submitted
+                        ? "Formulario enviado una vez. Completa el MFA si aparece; si Garmin muestra un error, puedes corregir el acceso en esta misma ventana."
+                        : "No se identificó un formulario único de Garmin. Puedes completar el acceso manualmente en esta ventana.");
+                }
+                catch (Exception ex) when (ex is AgentException or PlaywrightException or System.TimeoutException)
+                {
+                    Console.WriteLine("No se pudo autocompletar. La ventana permanece disponible para iniciar sesión manualmente; puedes actualizar las credenciales después.");
+                }
+            }
             Console.WriteLine("Inicia sesión en Chrome/Edge y completa el MFA si aparece. Esta ventana espera hasta que termines; Ctrl+C cancela. El agente se conectará después del acceso.");
             await native.WaitForGarminLoginAsync(cancellationToken: cancellationToken);
         }

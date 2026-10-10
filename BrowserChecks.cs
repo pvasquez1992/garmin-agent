@@ -43,6 +43,41 @@ public static class BrowserChecks
             throw new AgentException("El límite explícito de acceso no se respetó.");
         }
         catch (NeedsLoginException) { Check(!page.IsClosed, "espera limitada conserva la ventana hasta que el dueño la cierre"); }
+
+        var credentialRoot = Path.Combine(directory, "credential-fixture");
+        Directory.CreateDirectory(Path.Combine(credentialRoot, ".local"));
+        var credentialBytes = Encoding.UTF8.GetBytes("""
+            {"version":1,"email":"fixture@example.com","password":"not-a-real-password"}
+            """);
+        var credentialCipher = ProtectedData.Protect(credentialBytes, null, DataProtectionScope.CurrentUser);
+        CryptographicOperations.ZeroMemory(credentialBytes);
+        await File.WriteAllBytesAsync(GarminCredentials.FilePath(credentialRoot), credentialCipher);
+        var credentials = GarminCredentials.Read(credentialRoot);
+        Check(credentials.Email == "fixture@example.com" && credentials.Password == "not-a-real-password",
+            "lectura de credenciales ficticias en el formato cifrado de PowerShell");
+        Check(!Encoding.UTF8.GetString(credentialCipher).Contains("not-a-real-password"), "contraseña no almacenada en texto plano");
+        Check(!GarminAutoLogin.IsTrustedLoginOrigin("https://sso.garmin.com.attacker.example/login")
+            && !GarminAutoLogin.IsTrustedLoginOrigin("http://sso.garmin.com/login"), "rechazo de dominios parecidos y HTTP para credenciales");
+        var authContext = await browser.NewContextAsync();
+        const string loginHtml = """
+            <html><body><form onsubmit="event.preventDefault(); document.body.dataset.submitted='yes';">
+            <label>Email Address<input type="email" name="email"></label>
+            <label>Password<input type="password"></label><button type="submit">Sign In</button>
+            </form></body></html>
+            """;
+        // Intercept every request: even the trusted Garmin-looking fixture never contacts Garmin.
+        await authContext.RouteAsync("**/*", route => route.FulfillAsync(new() { ContentType = "text/html", Body = loginHtml }));
+        var authPage = await authContext.NewPageAsync();
+        await authPage.GotoAsync("https://outside.example/login");
+        Check(!await GarminAutoLogin.TrySubmitAsync(browser, credentials, timeout: TimeSpan.FromMilliseconds(300))
+            && await authPage.Locator("input[type=password]").InputValueAsync() == "", "sin autocompletar credenciales fuera de Garmin");
+        await authPage.GotoAsync("https://sso.garmin.com/portal/fixture");
+        Check(await GarminAutoLogin.TrySubmitAsync(browser, credentials, timeout: TimeSpan.FromSeconds(3))
+            && await authPage.Locator("input[type=email]").InputValueAsync() == credentials.Email
+            && await authPage.Locator("input[type=password]").InputValueAsync() == credentials.Password
+            && await authPage.Locator("body").GetAttributeAsync("data-submitted") == "yes", "autocompletado y envío del formulario ficticio una vez");
+        await authContext.CloseAsync();
+
         await page.SetContentAsync("""
             <html><body>
             <a href="https://connect.garmin.com/app/activity/12345">Nueva ruta</a>

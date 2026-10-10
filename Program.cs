@@ -31,6 +31,7 @@ try
         Garmin Agent — .NET 10 + Microsoft Agent Framework + Foundry Local + Playwright
         dotnet run -- demo                Modelo real; portal y POST simulados; FIT ficticio real
         dotnet run -- login               Abre Garmin para conectar y cifrar la sesión web
+        dotnet run -- login --manual-login  Acceso manual aunque existan credenciales guardadas
         dotnet run -- run                 Descarga la última actividad y prepara JSON; sin POST
         dotnet run -- run --enviar        Descarga, convierte y envía a /sync/activities
         dotnet run -- self-test           Pruebas locales; no usan Garmin ni producción
@@ -50,7 +51,7 @@ try
     }
     if (command == "login")
     {
-        await using var portal = new GarminPortal(root);
+        await using var portal = new GarminPortal(root, !args.Contains("--manual-login"));
         await portal.OpenAsync(interactive: true, cancellationToken: shutdown.Token);
         Console.WriteLine("Sesión web guardada cifrada para tu usuario de Windows. La ventana se cerrará ahora; puedes continuar con run.");
         return 0;
@@ -64,7 +65,7 @@ try
     await using var foundry = await Foundry.StartAsync(root, Option("--model", defaultModel), shutdown.Token);
     var connection = foundry.Connection;
     Console.WriteLine($"Foundry Local: {connection.Model}. Modo: {(demo ? "demo" : args.Contains("--enviar") ? "envío real" : "preparar JSON")}.");
-    await using var tools = new ActivityTools(root, run, demo, args.Contains("--enviar"), Option("--timezone", "America/New_York"), shutdown.Token);
+    await using var tools = new ActivityTools(root, run, demo, args.Contains("--enviar"), Option("--timezone", "America/New_York"), shutdown.Token, !args.Contains("--manual-login"));
     using var model = Foundry.CreateClient(connection);
     var agent = new ImportAgent(model, tools, trace);
     await agent.RunAsync(shutdown.Token);

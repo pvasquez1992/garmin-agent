@@ -119,10 +119,48 @@ mediante CDP local. Después comprueba las actividades, guarda la sesión web ci
 con DPAPI en `.local/browser-session.bin` y cierra el navegador temporal.
 El acceso interactivo no tiene un límite de tiempo automático: espera hasta que
 entres, cierres la ventana o canceles con Ctrl+C.
-La contraseña no se escribe en archivos del proyecto ni se manda al modelo.
+Sin configurar autocompletado, no se guarda la contraseña. Si lo configuras,
+se guarda exclusivamente cifrada con DPAPI; nunca se manda al modelo.
 Durante el login el navegador maneja su almacenamiento normal en el perfil temporal;
 el programa elimina ese perfil al terminar. Si el navegador deja archivos bloqueados,
 lo informa. No se modifica tu perfil habitual de Chrome o Edge.
+
+### Autocompletar con credenciales cifradas
+
+En tu PowerShell habitual, desde esta carpeta:
+
+```powershell
+.\scripts\set-garmin-credentials.ps1
+dotnet run -- login
+```
+
+El cuadro de Windows solicita tu correo y contraseña; no los pases como argumentos
+ni los escribas en el chat. El script guarda `.local/garmin-credentials.bin`
+cifrado con DPAPI para tu usuario de Windows, ignorado por Git. No crea un JSON
+con la contraseña en texto plano. Ejecuta el script de nuevo para cambiarlas.
+
+`login` y la renovación de sesión de `run` detectan ese archivo. El código C#
+completa un formulario único en HTTPS de `sso.garmin.com` o `connect.garmin.com`
+y lo envía una vez. Espera hasta que completes MFA o corrijas el acceso, o canceles.
+Si no identifica el formulario o Garmin lo rechaza, puedes completar el acceso
+manualmente; no se repiten intentos automáticos. Para omitir el autocompletado:
+
+```powershell
+dotnet run -- login --manual-login
+```
+
+Se reutiliza la sesión web cifrada cuando todavía es válida: las credenciales
+guardadas se usan al renovar el acceso, no en cada importación. Con esto siguen
+siendo posibles solicitudes de MFA, CAPTCHA o cambios del portal. No representa
+una integración con la API oficial de Garmin ni garantiza acceso indefinido.
+
+Pruebas de este cambio: 36 comprobaciones del agente y 15 del navegador con datos
+ficticios, incluyendo lectura DPAPI, dominios rechazados, envío del formulario
+ficticio y cancelación de la espera. La verificación real del autocompletado se
+registra aparte; esas pruebas no autenticaron ninguna cuenta Garmin.
+También se verificó un `login` real con credenciales guardadas: el formulario se
+completó, se observó la lista de actividades, se guardó la sesión cifrada y el
+proceso terminó con salida 0. Esta comprobación no descargó ni publicó actividades.
 
 Garmin redirige actualmente `/modern/...` a `/app/...`. El programa reconoce ambas
 rutas y usa `/app/activities`. Se cambió el navegador después de observar un error
@@ -195,6 +233,8 @@ También están los perfiles **Conectar Garmin**, **Preparar JSON** e **Importar
 | `Foundry.cs` | Gestiona Qwen con el SDK y conecta su `IChatClient` al framework. | `StartAsync`, antes de `model.LoadAsync`; `FoundrySession.DisposeAsync`. |
 | `ActivityTools.cs` | Herramientas, estados, lectura de clave y POST. | Casos `convertir_zip` y `publicar_actividades`. |
 | `GarminPortal.cs` | Sesión cifrada, navegador y descarga web de Garmin. | `DownloadAsync`. |
+| `GarminCredentials.cs` | Lee el archivo DPAPI; mantiene los valores fuera del modelo. | `Read`. |
+| `GarminAutoLogin.cs` | Identifica el formulario permitido y lo envía una vez. | `TrySubmitAsync`. |
 | `NativeBrowser.cs` | Abre Chrome/Edge normal, espera el login y ofrece CDP local; limpia su perfil temporal. | `WaitForGarminLoginAsync`. |
 | `FitActivity.cs` | Decodifica FIT y construye el JSON estricto. | Después de `decoder.Read`. |
 | `Checks.cs` | Datos ficticios y comprobaciones locales. | `RunAsync`. |
