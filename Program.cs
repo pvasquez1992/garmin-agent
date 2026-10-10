@@ -1,6 +1,17 @@
 using GarminAgent;
 using System.Text.Json;
 
+// The GPU variant reproduced a native AMD driver crash at process exit on this PC.
+// Use CPU by default; --model can select another catalog alias or exact variant.
+const string defaultModel = "qwen2.5-7b-instruct-generic-cpu:4";
+
+using var shutdown = new CancellationTokenSource();
+Console.CancelKeyPress += (_, eventArgs) =>
+{
+    eventArgs.Cancel = true;
+    shutdown.Cancel();
+};
+
 try
 {
     var command = args.FirstOrDefault() ?? "help";
@@ -24,7 +35,8 @@ try
         dotnet run -- run --enviar        Descarga, convierte y envía a /sync/activities
         dotnet run -- self-test           Pruebas locales; no usan Garmin ni producción
         dotnet run -- browser-check       Prueba navegador/CDP/descarga con datos ficticios
-        Opcional: --model qwen2.5-7b --timezone America/New_York
+        Modelo predeterminado: qwen2.5-7b-instruct-generic-cpu:4 (CPU)
+        Opcional: --model <alias-o-ID-de-variante> --timezone America/New_York
         """);
         return 0;
     }
@@ -49,14 +61,20 @@ try
     var run = Path.Combine(root, ".local", "runs", System.DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8]);
     Directory.CreateDirectory(run);
     using var trace = new TraceLog(Path.Combine(run, "trace.jsonl"));
-    var connection = await Foundry.DiscoverAsync(Option("--model", "qwen2.5-7b"));
+    await using var foundry = await Foundry.StartAsync(root, Option("--model", defaultModel), shutdown.Token);
+    var connection = foundry.Connection;
     Console.WriteLine($"Foundry Local: {connection.Model}. Modo: {(demo ? "demo" : args.Contains("--enviar") ? "envío real" : "preparar JSON")}.");
     await using var tools = new ActivityTools(root, run, demo, args.Contains("--enviar"), Option("--timezone", "America/New_York"));
     using var model = Foundry.CreateClient(connection);
     var agent = new ImportAgent(model, tools, trace);
-    await agent.RunAsync();
+    await agent.RunAsync(shutdown.Token);
     Console.WriteLine($"Archivos locales: {run}");
     return 0;
+}
+catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
+{
+    Console.Error.WriteLine("Ejecución cancelada; se cerraron los recursos locales.");
+    return 130;
 }
 catch (NeedsLoginException ex)
 {

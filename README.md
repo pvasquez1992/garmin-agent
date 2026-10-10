@@ -26,15 +26,17 @@ inferencia local y Microsoft Agent Framework invoca las herramientas y construye
 los mensajes de resultado. La aplicación conserva un recorrido explícito de hasta
 12 turnos y ofrece una herramienta por estado; Qwen no planifica libremente.
 
-## Qué cambió con el NuGet
+## Qué hace cada SDK
 
 `Microsoft.Agents.AI.OpenAI` conecta el framework a un cliente compatible con
 OpenAI. El endpoint está limitado a localhost: el modelo sigue siendo Qwen en
 Foundry Local, sin una cuenta de OpenAI ni suscripción de Azure.
 
-- `Foundry.cs` descubre el puerto/modelo de la CLI y crea un `IChatClient` con
-  el SDK cliente OpenAI apuntando al servicio local. No sigue redirecciones ni
-  reintenta peticiones HTTP automáticamente.
+- `Foundry.cs` usa `Microsoft.AI.Foundry.Local.WinML` para iniciar el runtime,
+  preparar aceleración, obtener Qwen del catálogo, descargarlo si hace falta y
+  cargarlo. Inicia un endpoint HTTP temporal dentro del mismo proceso, limitado
+  a `127.0.0.1`, para conectar su `IChatClient` al framework. No sigue
+  redirecciones ni reintenta peticiones HTTP automáticamente.
 - `Agent.cs` crea un `AIAgent`, expone cada herramienta como `AIFunction` y usa
   `FunctionInvokingChatClient` para invocarla y devolver su resultado.
 - La aplicación valida la respuesta completa antes de ejecutar: rechaza llamadas
@@ -44,19 +46,36 @@ Foundry Local, sin una cuenta de OpenAI ni suscripción de Azure.
   actualiza la herramienta disponible. La sesión vencida detiene inmediatamente
   el flujo, sin que el framework la convierta en un reintento de login.
 
-Este cambio incorpora **Agent Framework**. Todavía no integra el SDK de gestión
-de modelos `Microsoft.AI.Foundry.Local.WinML`: la CLI sigue cargando Qwen.
+**Agent Framework** coordina las llamadas a funciones. El **SDK de Foundry Local**
+gestiona el modelo y ejecuta la inferencia en la computadora. No son SDKs del
+servicio de agentes de Azure. El cliente compatible con OpenAI se usa únicamente
+contra el endpoint local iniciado por el SDK; no hace llamadas a OpenAI.
+
+Al terminar (también si falla el flujo) `FoundrySession.DisposeAsync` cierra ese
+endpoint, descarga el modelo de memoria y libera el runtime. La caché permanece.
+Ctrl+C solicita cancelación y cierre normal de recursos; matar el proceso o cerrar
+su ventana de forma forzada no permite garantizar esa limpieza normal.
 El login, Playwright, FIT, JSON, DPAPI y el POST siguen en nuestras herramientas.
 
-Verificación de esta migración: compilación sin advertencias, 36 comprobaciones
+Verificación de la incorporación inicial de Agent Framework: compilación sin advertencias, 36 comprobaciones
 locales y demo con Qwen real completando las seis herramientas. El portal, FIT
 y POST de la demo son ficticios; no se hizo POST real durante esta migración.
 
+Verificación del SDK de Foundry Local: compilación final sin advertencias ni
+errores, 36 comprobaciones y demo con Qwen real en CPU. Completó las seis
+herramientas con `processed: 1, simulated: true`, cerró el endpoint y terminó
+con código 0. También se comprobó que un modelo inexistente detiene el inicio
+y libera el manager con código 1. No se hizo POST real ni se abrió Garmin.
+
 ## Requisitos
 
-- Windows con .NET 10 SDK y Chrome o Microsoft Edge instalado.
-- Foundry Local CLI 0.11.0 con un modelo que admita herramientas, ya descargado y cargado.
-- En este equipo se usa `qwen2.5-7b`; esta CLI tiene `server` y `status`, no `service`.
+- Windows 11 x64 con .NET 10 SDK y Chrome o Microsoft Edge instalado (entorno probado).
+- El proyecto usa `net10.0-windows10.0.18362.0`, `win-x64` y el SDK WinML 1.2.4.
+- No hace falta instalar la CLI de Foundry ni ejecutar `foundry run` antes del agente.
+- El modelo predeterminado es `qwen2.5-7b-instruct-generic-cpu:4`, con soporte de herramientas. El programa lo
+  carga automáticamente, pero no lo entrena ni modifica sus pesos.
+- La primera ejecución puede descargar proveedores de aceleración y el modelo.
+  Después reutiliza la caché. Con 16 GB evita cargar otra copia del modelo a la vez.
 - Internet para Garmin y el POST real; la demo no abre Garmin ni llama a la API real.
 
 ## Primer recorrido
@@ -73,6 +92,19 @@ dotnet run -- demo
 `self-test` usa un modelo y HTTP simulados. `demo` usa el modelo real de Foundry,
 un FIT ficticio generado con el SDK y un POST simulado. Verás seis herramientas
 en la consola. `processed: 1, simulated: true` no significa que se haya escrito en D1.
+
+El SDK guarda sus datos de aplicación y registros privados en `.local/foundry`.
+Reutiliza los modelos de `%USERPROFILE%\.foundry\cache\models`, la misma ubicación
+que utiliza la CLI en este equipo, sin depender del ejecutable de la CLI. Descarga
+lo que no esté en esa caché. No elimina modelos al terminar.
+
+Se eligió CPU por un fallo observado en este equipo: dos demos con la variante
+GPU completaron las herramientas, pero Windows registró una excepción nativa
+`c0000005` en `amdxc64.dll` del controlador AMD al salir. El cierre del SDK había
+retornado; eso no implica que el proceso acabara correctamente. No se modificó
+el controlador ni se oculta ese fallo cambiando el código de salida.
+La variante CPU necesita su propia descarga (unos 6,2 GB); conserva la GPU ya
+descargada. `--model qwen2.5-7b` vuelve a permitir la selección automática del SDK.
 
 ## Acceso a Garmin
 
@@ -155,7 +187,7 @@ También están los perfiles **Conectar Garmin**, **Preparar JSON** e **Importar
 | --- | --- | --- |
 | `Program.cs` | Selecciona el modo y conecta componentes. | Antes de `agent.RunAsync()`. |
 | `Agent.cs` | Crea `AIAgent` y las funciones; valida respuestas y coordina estados. | `ActivityFunction.InvokeCoreAsync`, antes de `tools.ExecuteAsync`. |
-| `Foundry.cs` | Descubre el endpoint local y conecta su `IChatClient` al framework. | `CreateClient`. |
+| `Foundry.cs` | Gestiona Qwen con el SDK y conecta su `IChatClient` al framework. | `StartAsync`, antes de `model.LoadAsync`; `FoundrySession.DisposeAsync`. |
 | `ActivityTools.cs` | Herramientas, estados, lectura de clave y POST. | Casos `convertir_zip` y `publicar_actividades`. |
 | `GarminPortal.cs` | Sesión cifrada, navegador y descarga web de Garmin. | `DownloadAsync`. |
 | `NativeBrowser.cs` | Abre Chrome/Edge normal, espera el login y ofrece CDP local; limpia su perfil temporal. | `WaitForGarminLoginAsync`. |
@@ -175,9 +207,17 @@ documentación y el archivo de bloqueo de paquetes, no descargas ni sesiones.
 
 ## Diagnóstico
 
-- `foundry status --output json` muestra si el servicio está listo.
-- Si no hay un modelo cargado, abre el ya descargado con `foundry run qwen2.5-7b`.
-- El agente descubre el puerto de Foundry: no fija uno en el código.
+- Los mensajes `[foundry/sdk]` muestran preparación, carga y cierre del runtime.
+- `foundry status` pertenece a la CLI y no muestra el modelo cargado dentro de
+  este programa. El agente no usa el servidor de esa CLI.
+- Si la CLI tiene Qwen cargado y necesitas liberar RAM, usa
+  `foundry model unload qwen2.5-7b`; conserva la descarga. Esto no afecta Actions.
+- El SDK asigna un puerto local libre y el agente valida el endpoint devuelto.
+- `--model` acepta un alias (selección automática del dispositivo) o el ID exacto
+  de una variante del catálogo. Por ejemplo, para elegir CPU explícitamente:
+  `dotnet run -- demo --model qwen2.5-7b-instruct-generic-cpu:4`.
+  Una variante distinta puede necesitar su propia descarga; no cambia la de GPU.
+- Si no aparece el modelo solicitado, revisa `--model` y la conexión al catálogo.
 - Una respuesta de texto del modelo no equivale a ejecutar una herramienta.
 - El bucle permite como máximo 12 turnos y exige finalizar mediante la herramienta.
 - Los mensajes de error de navegador/HTTP no se imprimen completos para evitar
@@ -186,6 +226,8 @@ documentación y el archivo de bloqueo de paquetes, no descargas ni sesiones.
 ## Fuentes
 
 - [Foundry Local REST API](https://learn.microsoft.com/en-us/azure/foundry-local/reference/reference-rest)
+- [SDK de Foundry Local: configuración Windows y ciclo del modelo](https://learn.microsoft.com/en-us/azure/foundry-local/reference/reference-sdk-current)
+- [Foundry Local: integración con clientes de inferencia](https://learn.microsoft.com/en-us/azure/foundry-local/how-to/how-to-integrate-with-inference-sdks)
 - [Agent Framework: clientes compatibles con OpenAI](https://learn.microsoft.com/en-us/agent-framework/integrations/by-component/model-providers/openai)
 - [Agent Framework: agentes y workflows](https://learn.microsoft.com/en-us/agent-framework/overview/)
 - [Playwright .NET: autenticación](https://playwright.dev/dotnet/docs/auth)
